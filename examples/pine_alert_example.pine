@@ -1,0 +1,57 @@
+//@version=5
+// ═══════════════════════════════════════════════════════════════════════════
+//  EXAMPLE: making any Pine strategy speak the TV→NinjaTrader bridge protocol
+//
+//  The bridge doesn't care what your strategy's logic is. It only needs each
+//  order event to carry a JSON alert_message with these fields:
+//
+//    action    "buy" | "sell" | "reduce" | "exit" | "flatten"
+//    symbol    your chart's ticker (syminfo.ticker), e.g. "MNQ1!"
+//    qty       contracts (integer). Required for buy/sell/reduce.
+//    sl        stop-loss PRICE for the resting backstop order (0 = none)
+//    tp        take-profit PRICE (0 = none)
+//    strategy  a short unique tag for THIS strategy, e.g. "MYSTRAT"
+//
+//  Then create ONE alert on the strategy:
+//    Condition: <your strategy> → "Order fills and alert() function calls"
+//    Message:   {{strategy.order.alert_message}}
+//    Webhook:   https://YOUR-DOMAIN.ngrok-free.app/webhook?token=YOUR_TOKEN
+//
+//  ⚠ Any time you change the strategy's settings or code, DELETE and
+//    RE-CREATE the alert — alerts snapshot settings at creation time.
+// ═══════════════════════════════════════════════════════════════════════════
+strategy("Bridge Protocol Example", overlay=true)
+
+TAG = "MYSTRAT"                    // must match the executor's "Signal tag"
+qty = input.int(1, "Contracts", minval=1)
+
+// --- toy signal: MA cross (replace with your real logic) ---
+fast = ta.sma(close, 10)
+slow = ta.sma(close, 30)
+longSig  = ta.crossover(fast, slow)
+shortSig = ta.crossunder(fast, slow)
+
+// --- protective levels (replace with your real logic) ---
+atr = ta.atr(14)
+longSl(c)  => c - 2 * atr
+shortSl(c) => c + 2 * atr
+
+// --- JSON builders ---
+f_entryMsg(string act, float slPx, float tpPx) =>
+    '{"action":"' + act + '","symbol":"' + syminfo.ticker + '","qty":' + str.tostring(qty) +
+     ',"sl":' + str.tostring(slPx) + ',"tp":' + str.tostring(tpPx) + ',"strategy":"' + TAG + '"}'
+exitMsg = '{"action":"exit","symbol":"' + syminfo.ticker + '","strategy":"' + TAG + '"}'
+
+// --- orders with alert messages attached ---
+if longSig and strategy.position_size <= 0
+    strategy.entry("L", strategy.long, qty=qty, alert_message=f_entryMsg("buy", longSl(close), 0))
+if shortSig and strategy.position_size >= 0
+    strategy.entry("S", strategy.short, qty=qty, alert_message=f_entryMsg("sell", shortSl(close), 0))
+
+// exits: attach exitMsg to EVERY way the strategy can close a position,
+// so NinjaTrader always hears about it
+strategy.exit("XL", from_entry="L", stop=longSl(strategy.position_avg_price),  alert_message=exitMsg)
+strategy.exit("XS", from_entry="S", stop=shortSl(strategy.position_avg_price), alert_message=exitMsg)
+
+plot(fast, color=color.teal)
+plot(slow, color=color.orange)
