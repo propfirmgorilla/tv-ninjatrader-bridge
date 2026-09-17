@@ -94,10 +94,78 @@ Pause between commands and verify each step in NT (Positions and Orders
 tabs). Everything is logged to the NinjaScript Output window and
 `Documents\TvBridge.log`.
 
-### 5. The TradingView alert
+### 5. Wire your strategy for webhooks
 
-Your Pine strategy must attach a JSON `alert_message` to every order — see
-`examples/pine_alert_example.pine`. Then create ONE alert:
+Your Pine strategy already decides *when* to trade — it just needs to announce
+every decision in JSON the bridge understands. That means attaching an
+`alert_message` to **every** order command (`strategy.entry`, `strategy.close`,
+`strategy.exit`, `strategy.close_all`). Miss one and that fill sends an empty
+webhook that errors out. See `examples/pine_alert_example.pine` for a finished
+strategy.
+
+You don't have to write this yourself. Paste the strategy you found into any AI
+assistant (Claude, ChatGPT) with the prompt below, then verify the result with
+**The Check** that follows.
+
+**The prompt** — paste your whole strategy where it says to:
+
+```text
+You are helping me connect a TradingView Pine Script strategy to NinjaTrader
+through a webhook bridge. I'll paste my strategy at the bottom. Modify it to
+send webhook alerts, following these rules EXACTLY:
+
+1. Do NOT change any trading logic, indicators, or settings. Only ADD the
+   webhook messaging. The strategy must behave identically.
+
+2. Near the top, after the inputs, add these three inputs:
+      whTag    = input.string("MYSTRAT", "Strategy Tag")
+      whSymbol = input.string("MNQ1!",   "Routing Symbol")
+      qtyInput = input.int(1, "Order Quantity", minval=1)
+   Then build three JSON message strings (use str.tostring() for numbers):
+      BUY : {"action":"buy","symbol":"<whSymbol>","qty":<qtyInput>,"strategy":"<whTag>"}
+      SELL: {"action":"sell","symbol":"<whSymbol>","qty":<qtyInput>,"strategy":"<whTag>"}
+      EXIT: {"action":"exit","symbol":"<whSymbol>","strategy":"<whTag>"}
+
+3. Attach an alert_message to EVERY order command — every strategy.entry,
+   strategy.order, strategy.close, strategy.close_all, and strategy.exit.
+   This is critical: the TradingView alert fires on every order fill, so any
+   order left without a message sends a broken, empty webhook that errors out.
+      - Long entries  -> BUY message
+      - Short entries -> SELL message
+      - Every close and every protective exit (stop, target, trailing) -> EXIT message
+
+4. Only use these three actions: buy, sell, exit. Use "exit" for all closes.
+
+5. If the strategy ever closes only PART of a position (a scale-out / partial
+   exit), STOP and tell me — that needs special handling, don't just use exit.
+
+6. Output the full modified script in one code block. Then list every order
+   line you added a message to, so I can double-check nothing was missed.
+
+Here is my strategy:
+[PASTE THE WHOLE STRATEGY HERE]
+```
+
+**The Check** — before you trust the wired strategy:
+
+1. **Names match.** The strategy's settings now show a **Strategy Tag** and
+   **Routing Symbol** input. Set them to the pair your executor registered —
+   the `/health` endpoint shows it (e.g. `MYSTRAT|MNQ1!`).
+2. **Nothing missed.** Skim the AI's list of changed lines: every
+   `strategy.entry`, `strategy.close`, and `strategy.exit` should have an
+   `alert_message`.
+3. **Watch it on Sim101.** Add the strategy to your chart, create the alert
+   (step 6), and watch `TvBridge.log`: an entry logs `BUY`/`SELL`, an exit logs
+   `FLATTEN`, all tagged `[MYSTRAT|MNQ1!]`.
+
+If the log shows `missing action/symbol/strategy`, an order line got no message
+(or the alert isn't sending `{{strategy.order.alert_message}}`) — re-run the
+prompt. If it shows `no enabled strategy for …`, the tag/symbol don't match —
+fix the two inputs.
+
+### 6. The TradingView alert
+
+Create ONE alert:
 
 - **Condition**: your strategy → **"Order fills and alert() function calls"**
 - **Message**: exactly `{{strategy.order.alert_message}}`
@@ -141,6 +209,7 @@ working orders and close.
 | HTML page instead of JSON        | ngrok free-tier browser warning — add the skip header (tests only; TradingView is unaffected) |
 | `ERR_NGROK_3200 endpoint offline`| ngrok agent not running                                            |
 | "no enabled strategy for …"      | executor disabled, or tag/symbol don't match the payload           |
+| `missing action/symbol/strategy` | a Pine order has no `alert_message`, or the alert isn't sending `{{strategy.order.alert_message}}` |
 | orders fill but nothing on chart | chart instrument/account ≠ executor's, or prices off-screen        |
 | signals stop after a settings change | you didn't re-create the alert (rule #1)                       |
 
